@@ -66,10 +66,12 @@ TARGET_LOADABLE=$(prefix)/vec0.$(LOADABLE_EXTENSION)
 TARGET_STATIC=$(prefix)/libsqlite_vec0.a
 TARGET_STATIC_H=$(prefix)/sqlite-vec.h
 TARGET_CLI=$(prefix)/sqlite3
+TARGET_SHARED_OBJECT=$(prefix)/sqlitevec.so
 
 loadable: $(TARGET_LOADABLE)
 static: $(TARGET_STATIC)
 cli: $(TARGET_CLI)
+shared: $(TARGET_SHARED_OBJECT)
 
 all: loadable static cli
 
@@ -100,6 +102,15 @@ $(TARGET_STATIC): sqlite-vec.c sqlite-vec.h $(prefix) $(OBJS_DIR)
 	$(CC) -Ivendor/ -Ivendor/vec $(CFLAGS) -DSQLITE_CORE \
 	-O3 -c  $< -o $(OBJS_DIR)/vec.o
 	$(AR) rcs $@ $(OBJS_DIR)/vec.o
+
+$(TARGET_SHARED_OBJECT): sqlite-vec.c sqlite-vec.h $(prefix)
+	$(CC) \
+		-fPIC -shared \
+		-Wall -Wextra \
+		-Ivendor/ \
+		-O3 \
+		$(CFLAGS) \
+		$< -o $@
 
 $(TARGET_STATIC_H): sqlite-vec.h $(prefix)
 	cp $< $@
