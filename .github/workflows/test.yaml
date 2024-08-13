@@ -58,6 +58,7 @@ jobs:
           name: sqlite-vec-windows-x86_64-extension
           path: dist/*
   build-windows-x86_64-extension-msvc:
+    if: false
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -135,3 +136,10 @@ jobs:
         with:
           name: sqlite-vec-cosmopolitan
           path: dist/*
+  test-minimum:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: make sqlite-vec.h
+      - run: make test
+        working-directory: tests/minimum
