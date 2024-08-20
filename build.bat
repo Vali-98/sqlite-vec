@@ -1,5 +1,7 @@
 #!/bin/bash
 
+# note use -E flag to retain ANDROID_NDK_HOME env var
+
 API_LEVEL=31
 
 ARCHITECTURES=("arm64-v8a" "armeabi-v7a" "x86" "x86_64")
@@ -26,6 +28,5 @@ for ARCH in "${ARCHITECTURES[@]}"; do
 
     BUILD_DIR=dist/$ARCH
     mkdir -p $BUILD_DIR
-    make clean
     make shared CC=$TOOLCHAIN AR=$AR_DIR prefix=$BUILD_DIR
 done
