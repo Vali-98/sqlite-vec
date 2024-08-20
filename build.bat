@@ -6,6 +6,8 @@ ARCHITECTURES=("arm64-v8a" "armeabi-v7a" "x86" "x86_64")
 
 AR_DIR=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar
 
+rm -rf dist
+
 for ARCH in "${ARCHITECTURES[@]}"; do
     case $ARCH in
         "arm64-v8a")
