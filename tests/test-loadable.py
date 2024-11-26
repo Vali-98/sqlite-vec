@@ -81,7 +81,7 @@ def connect(ext, path=":memory:", extra_entrypoint=None):
 db = connect(EXT_PATH)
 
 
-def explain_query_plan(sql):
+def explain_query_plan(sql, db=db):
     return db.execute("explain query plan " + sql).fetchone()["detail"]
 
 
@@ -119,7 +119,6 @@ FUNCTIONS = [
 MODULES = [
     "vec0",
     "vec_each",
-    "vec_npy_each",
     # "vec_static_blob_entries",
     # "vec_static_blobs",
 ]
@@ -1023,6 +1022,7 @@ def test_vec0_drops():
     ] == [
         "t1",
         "t1_chunks",
+        "t1_info",
         "t1_rowids",
         "t1_vector_chunks00",
         "t1_vector_chunks01",
@@ -1498,6 +1498,13 @@ def test_vec0_text_pk():
     ]
 
     if SUPPORTS_VTAB_IN:
+        assert re.match(
+            ("SCAN (TABLE )?t VIRTUAL TABLE INDEX 0:3{___}___\[___"),
+            explain_query_plan(
+                "select t_id, distance from t where aaa match '' and k = 3 and t_id in ('t_2', 't_3')",
+                db=db,
+            ),
+        )
         assert execute_all(
             db,
             "select t_id, distance from t where aaa match ? and k = 3 and t_id in ('t_2', 't_3')",
@@ -1619,6 +1626,7 @@ def to_npy(arr):
 
 
 def test_vec_npy_each():
+    db = connect(EXT_PATH, extra_entrypoint="sqlite3_vec_numpy_init")
     vec_npy_each = lambda *args: execute_all(
         db, "select rowid, * from vec_npy_each(?)", args
     )
@@ -1651,6 +1659,7 @@ def test_vec_npy_each():
 
 
 def test_vec_npy_each_errors():
+    db = connect(EXT_PATH, extra_entrypoint="sqlite3_vec_numpy_init")
     vec_npy_each = lambda *args: execute_all(
         db, "select rowid, * from vec_npy_each(?)", args
     )
@@ -1769,7 +1778,7 @@ import tempfile
 
 
 def test_vec_npy_each_errors_files():
-    db = connect(EXT_PATH, extra_entrypoint="sqlite3_vec_fs_read_init")
+    db = connect(EXT_PATH, extra_entrypoint="sqlite3_vec_numpy_init")
 
     def vec_npy_each(data):
         with tempfile.NamedTemporaryFile(delete_on_close=False) as f:
@@ -1934,20 +1943,6 @@ def test_vec0_create_errors():
     )
     with _raises(
         "Could not create '_vector_chunks00' shadow table: not authorized",
-    ):
-        db.execute("create virtual table t1 using vec0(a float[1])")
-    db.set_authorizer(None)
-
-    db.set_authorizer(authorizer_deny_on(sqlite3.SQLITE_INSERT, "t1_chunks"))
-    with _raises(
-        "Could not create create an initial chunk",
-    ):
-        db.execute("create virtual table t1 using vec0(a float[1])")
-    db.set_authorizer(None)
-
-    db.set_authorizer(authorizer_deny_on(sqlite3.SQLITE_INSERT, "t1_vector_chunks00"))
-    with _raises(
-        "Could not create create an initial chunk",
     ):
         db.execute("create virtual table t1 using vec0(a float[1])")
     db.set_authorizer(None)
@@ -2223,6 +2218,9 @@ def test_smoke():
             "name": "vec_xyz_chunks",
         },
         {
+            "name": "vec_xyz_info",
+        },
+        {
             "name": "vec_xyz_rowids",
         },
         {
@@ -2230,32 +2228,34 @@ def test_smoke():
         },
     ]
     chunk = db.execute("select * from vec_xyz_chunks").fetchone()
-    assert chunk["chunk_id"] == 1
-    assert chunk["validity"] == bytearray(int(1024 / 8))
-    assert chunk["rowids"] == bytearray(int(1024 * 8))
-    vchunk = db.execute("select * from vec_xyz_vector_chunks00").fetchone()
-    assert vchunk["rowid"] == 1
-    assert vchunk["vectors"] == bytearray(int(1024 * 4 * 2))
+    # as of TODO, no initial row is inside the chunks table
+    assert chunk is None
+    # assert chunk["chunk_id"] == 1
+    # assert chunk["validity"] == bytearray(int(1024 / 8))
+    # assert chunk["rowids"] == bytearray(int(1024 * 8))
+    # vchunk = db.execute("select * from vec_xyz_vector_chunks00").fetchone()
+    # assert vchunk["rowid"] == 1
+    # assert vchunk["vectors"] == bytearray(int(1024 * 4 * 2))
 
     assert re.match(
-        "SCAN (TABLE )?vec_xyz VIRTUAL TABLE INDEX 0:knn:",
+        "SCAN (TABLE )?vec_xyz VIRTUAL TABLE INDEX 0:3{___}___",
         explain_query_plan(
             "select * from vec_xyz where a match X'' and k = 10 order by distance"
         ),
     )
     if SUPPORTS_VTAB_LIMIT:
         assert re.match(
-            "SCAN (TABLE )?vec_xyz VIRTUAL TABLE INDEX 0:knn:",
+            "SCAN (TABLE )?vec_xyz VIRTUAL TABLE INDEX 0:3{___}___",
             explain_query_plan(
                 "select * from vec_xyz where a match X'' order by distance limit 10"
             ),
         )
     assert re.match(
-        "SCAN (TABLE )?vec_xyz VIRTUAL TABLE INDEX 0:fullscan",
+        "SCAN (TABLE )?vec_xyz VIRTUAL TABLE INDEX 0:1",
         explain_query_plan("select * from vec_xyz"),
     )
     assert re.match(
-        "SCAN (TABLE )?vec_xyz VIRTUAL TABLE INDEX 3:point",
+        "SCAN (TABLE )?vec_xyz VIRTUAL TABLE INDEX 3:2",
         explain_query_plan("select * from vec_xyz where rowid = 4"),
     )
 
@@ -2274,36 +2274,42 @@ def test_smoke():
 
     db.execute("insert into vec_xyz(rowid, a) select 2, X'0000000000000040'")
     chunk = db.execute("select * from vec_xyz_chunks").fetchone()
-    assert chunk[
-        "rowids"
-    ] == b"\x01\x00\x00\x00\x00\x00\x00\x00" + b"\x02\x00\x00\x00\x00\x00\x00\x00" + bytearray(
-        int(1024 * 8) - 8 * 2
+    assert (
+        chunk["rowids"]
+        == b"\x01\x00\x00\x00\x00\x00\x00\x00"
+        + b"\x02\x00\x00\x00\x00\x00\x00\x00"
+        + bytearray(int(1024 * 8) - 8 * 2)
     )
     assert chunk["chunk_id"] == 1
     assert chunk["validity"] == b"\x03" + bytearray(int(1024 / 8) - 1)
     vchunk = db.execute("select * from vec_xyz_vector_chunks00").fetchone()
     assert vchunk["rowid"] == 1
-    assert vchunk[
-        "vectors"
-    ] == b"\x00\x00\x00\x00\x00\x00\x80\x3f" + b"\x00\x00\x00\x00\x00\x00\x00\x40" + bytearray(
-        int(1024 * 4 * 2) - (2 * 4 * 2)
+    assert (
+        vchunk["vectors"]
+        == b"\x00\x00\x00\x00\x00\x00\x80\x3f"
+        + b"\x00\x00\x00\x00\x00\x00\x00\x40"
+        + bytearray(int(1024 * 4 * 2) - (2 * 4 * 2))
     )
 
     db.execute("insert into vec_xyz(rowid, a) select 3, X'00000000000080bf'")
     chunk = db.execute("select * from vec_xyz_chunks").fetchone()
     assert chunk["chunk_id"] == 1
     assert chunk["validity"] == b"\x07" + bytearray(int(1024 / 8) - 1)
-    assert chunk[
-        "rowids"
-    ] == b"\x01\x00\x00\x00\x00\x00\x00\x00" + b"\x02\x00\x00\x00\x00\x00\x00\x00" + b"\x03\x00\x00\x00\x00\x00\x00\x00" + bytearray(
-        int(1024 * 8) - 8 * 3
+    assert (
+        chunk["rowids"]
+        == b"\x01\x00\x00\x00\x00\x00\x00\x00"
+        + b"\x02\x00\x00\x00\x00\x00\x00\x00"
+        + b"\x03\x00\x00\x00\x00\x00\x00\x00"
+        + bytearray(int(1024 * 8) - 8 * 3)
     )
     vchunk = db.execute("select * from vec_xyz_vector_chunks00").fetchone()
     assert vchunk["rowid"] == 1
-    assert vchunk[
-        "vectors"
-    ] == b"\x00\x00\x00\x00\x00\x00\x80\x3f" + b"\x00\x00\x00\x00\x00\x00\x00\x40" + b"\x00\x00\x00\x00\x00\x00\x80\xbf" + bytearray(
-        int(1024 * 4 * 2) - (2 * 4 * 3)
+    assert (
+        vchunk["vectors"]
+        == b"\x00\x00\x00\x00\x00\x00\x80\x3f"
+        + b"\x00\x00\x00\x00\x00\x00\x00\x40"
+        + b"\x00\x00\x00\x00\x00\x00\x80\xbf"
+        + bytearray(int(1024 * 4 * 2) - (2 * 4 * 3))
     )
 
     # db.execute("select * from vec_xyz")
@@ -2346,66 +2352,63 @@ def test_vec0_stress_small_chunks():
         {"rowid": 994, "a": _f32([99.4] * 8)},
         {"rowid": 993, "a": _f32([99.3] * 8)},
     ]
-    assert (
-        execute_all(
-            db,
-            """
+    assert execute_all(
+        db,
+        """
               select rowid, a, distance
               from vec_small
               where a match ?
                 and k = 9
               order by distance
             """,
-            [_f32([50.0] * 8)],
-        )
-        == [
-            {
-                "a": _f32([500 * 0.1] * 8),
-                "distance": 0.0,
-                "rowid": 500,
-            },
-            {
-                "a": _f32([501 * 0.1] * 8),
-                "distance": 0.2828384041786194,
-                "rowid": 501,
-            },
-            {
-                "a": _f32([499 * 0.1] * 8),
-                "distance": 0.2828384041786194,
-                "rowid": 499,
-            },
-            {
-                "a": _f32([502 * 0.1] * 8),
-                "distance": 0.5656875967979431,
-                "rowid": 502,
-            },
-            {
-                "a": _f32([498 * 0.1] * 8),
-                "distance": 0.5656875967979431,
-                "rowid": 498,
-            },
-            {
-                "a": _f32([503 * 0.1] * 8),
-                "distance": 0.8485260009765625,
-                "rowid": 503,
-            },
-            {
-                "a": _f32([497 * 0.1] * 8),
-                "distance": 0.8485260009765625,
-                "rowid": 497,
-            },
-            {
-                "a": _f32([496 * 0.1] * 8),
-                "distance": 1.1313751935958862,
-                "rowid": 496,
-            },
-            {
-                "a": _f32([504 * 0.1] * 8),
-                "distance": 1.1313751935958862,
-                "rowid": 504,
-            },
-        ]
-    )
+        [_f32([50.0] * 8)],
+    ) == [
+        {
+            "a": _f32([500 * 0.1] * 8),
+            "distance": 0.0,
+            "rowid": 500,
+        },
+        {
+            "a": _f32([501 * 0.1] * 8),
+            "distance": 0.2828384041786194,
+            "rowid": 501,
+        },
+        {
+            "a": _f32([499 * 0.1] * 8),
+            "distance": 0.2828384041786194,
+            "rowid": 499,
+        },
+        {
+            "a": _f32([502 * 0.1] * 8),
+            "distance": 0.5656875967979431,
+            "rowid": 502,
+        },
+        {
+            "a": _f32([498 * 0.1] * 8),
+            "distance": 0.5656875967979431,
+            "rowid": 498,
+        },
+        {
+            "a": _f32([503 * 0.1] * 8),
+            "distance": 0.8485260009765625,
+            "rowid": 503,
+        },
+        {
+            "a": _f32([497 * 0.1] * 8),
+            "distance": 0.8485260009765625,
+            "rowid": 497,
+        },
+        {
+            "a": _f32([496 * 0.1] * 8),
+            "distance": 1.1313751935958862,
+            "rowid": 496,
+        },
+        {
+            "a": _f32([504 * 0.1] * 8),
+            "distance": 1.1313751935958862,
+            "rowid": 504,
+        },
+    ]
 
 
 def test_vec0_distance_metric():
